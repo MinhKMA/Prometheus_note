@@ -1,2 +1,2 @@
-# Prometheus_note
+# Prometheus - My notes
 Prometheus basic 
