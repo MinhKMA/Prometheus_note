@@ -1,0 +1,242 @@
+# Cài đặt Prometheus trên Centos7 
+
+## 1. Mô hình 
+
+<div style="text-align:center"><img src="https://i.imgur.com/f0M10SP.png"></div>
+
+- Grafana note:
+    + OS: CentOS7
+    + IP : eth0 - 10.10.10.175
+- Prometheus note:
+    + OS: CentOS7
+    + IP : eth0 - 10.10.10.173
+- Linux note:
+    + OS: CentOS7
+    + IP : eth0 - 10.10.10.172
+
+## 2. Các bước thực hiện 
+
+Trên đây là môi trường lab nên tôi sẽ tắt selinux và firewalld để dễ dàng cho việc cài đặt. 
+
+```
+sed -i 's/\(^SELINUX=\).*/\SELINUX=disabled/' /etc/sysconfig/selinux
+sed -i 's/\(^SELINUX=\).*/\SELINUX=disabled/' /etc/selinux/config
+setenforce 0
+
+systemctl stop firewalld
+systemctl disable firewalld
+```
+
+### 2.1 Trên node server
+
+#### Bước 1: Update 
+
+```
+yum update -y
+yum install vim git wget epel-release -y
+```
+
+#### Bước 2: Tạo service user 
+
+```
+useradd --no-create-home --shell /bin/false prometheus
+```
+
+#### Bước 3: Cấu hình thư mục cấu hình và thư mục lưu trữ cho prometheus 
+
+```
+mkdir /etc/prometheus
+mkdir /var/lib/prometheus
+
+chown prometheus:prometheus /etc/prometheus
+chown prometheus:prometheus /var/lib/prometheus
+```
+
+#### Bước 4: Tải source code prometheus 
+
+```
+wget https://github.com/prometheus/prometheus/releases/download/v2.10.0/prometheus-2.10.0.linux-amd64.tar.gz
+
+tar xvf prometheus-2.10.0.linux-amd64.tar.gz 
+
+cp prometheus-2.10.0.linux-amd64/prometheus /usr/local/bin/
+cp prometheus-2.10.0.linux-amd64/promtool /usr/local/bin/
+
+chown prometheus:prometheus /usr/local/bin/prometheus
+chown prometheus:prometheus /usr/local/bin/promtool
+
+cp -r prometheus-2.10.0.linux-amd64/consoles /etc/prometheus
+cp -r prometheus-2.10.0.linux-amd64/console_libraries /etc/prometheus
+
+chown -R prometheus:prometheus /etc/prometheus/consoles
+chown -R prometheus:prometheus /etc/prometheus/console_libraries
+
+rm -rf prometheus-2.10.0.linux-amd64*
+```
+
+- Cấu hình file conf 
+
+```
+vim /etc/prometheus/prometheus.yml
+```
+như sau 
+
+```
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['localhost:9090']
+```
+
+#### Bước 5: Chạy prometheus bằng câu lệnh 
+
+```
+sudo -u prometheus /usr/local/bin/prometheus \
+--config.file /etc/prometheus/prometheus.yml \
+--storage.tsdb.path /var/lib/prometheus/ \
+--web.console.templates=/etc/prometheus/consoles \
+--web.console.libraries=/etc/prometheus/console_libraries
+```
+
+Sử dụng `ctrl + c` để dừng 
+
+#### Bước 6: Đặt tiến trình trong systemd để quản lý 
+
+```
+vi /etc/systemd/system/prometheus.service
+```
+
+Sửa file có nội dung như sau: 
+
+```
+[Unit]
+Description=Prometheus
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=prometheus
+Group=prometheus
+Type=simple
+ExecStart=/usr/local/bin/prometheus \
+    --config.file /etc/prometheus/prometheus.yml \
+    --storage.tsdb.path /var/lib/prometheus/ \
+    --web.console.templates=/etc/prometheus/consoles \
+    --web.console.libraries=/etc/prometheus/console_libraries
+
+[Install]
+WantedBy=multi-user.target
+```
+
+reload lại systemd và start Prom 
+
+```
+systemctl daemon-reload
+systemctl start prometheus
+systemctl status prometheus
+systemctl enable prometheus
+```
+
+Truy cập vào đường dẫn `http://10.10.10.173:9090/graph` kết quả như sau 
+
+<img src="https://i.imgur.com/gG7GxIn.png">
+
+### 2.2 Trên node linux cần giám sát 
+
+Ở đây mình sẽ tiến hành cài đặt `node_exporter` để thu thập thông số của máy chủ linux 
+
+#### Bước 1: Tạo ra một user 
+
+```
+useradd --no-create-home --shell /bin/false node_exporter
+```
+
+#### Bước 2: Tải source code 
+
+```
+wget https://github.com/prometheus/node_exporter/releases/download/v0.18.1/node_exporter-0.18.1.linux-amd64.tar.gz
+
+tar xvf node_exporter-0.18.1.linux-amd64.tar.gz
+
+cp node_exporter-0.18.1.linux-amd64/node_exporter /usr/local/bin
+chown node_exporter:node_exporter /usr/local/bin/node_exporter
+
+rm -rf node_exporter-0.18.1.linux-amd64*
+```
+
+#### Bước 3: Chạy exporter dưới systemd 
+
+```
+vim /etc/systemd/system/node_exporter.service
+```
+
+như sau 
+
+```
+[Unit]
+Description=Node Exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+ExecStart=/usr/local/bin/node_exporter
+
+[Install]
+WantedBy=multi-user.target
+```
+
+reload lại systemd 
+
+```
+systemctl daemon-reload
+systemctl start node_exporter
+systemctl enable node_exporter
+```
+
+Truy cập tới `http://10.10.10.172:9100/metrics` sẽ được kết quả như sau 
+
+<img src="https://i.imgur.com/HLwCmwk.png">
+
+#### Bước 4: Quay lại node Promtheus 
+
+- Add job vào file config 
+
+```
+vim /etc/prometheus/prometheus.yml
+```
+
+như sau 
+
+```
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['localhost:9090']
+  - job_name: 'node_exporter'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['10.10.10.172:9100']
+```
+
+Thêm từ dòng `job_name: 'node_exporter'` so với cấu hình ban đầu 
+
+- restart service promtheus 
+
+```
+systemctl restart prometheus
+```
+
+Kết quả như sau 
+
+<img src="https://i.imgur.com/ajkfo44.png">
